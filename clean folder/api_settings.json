@@ -1,8 +1,0 @@
-{
-  "engine": "code-davinci-002",
-  "prompt": "Once upon a time",
-  "temperature": 0.8,
-  "max_tokens": 50,
-  "n": 2,
-  "stop": null
-}
