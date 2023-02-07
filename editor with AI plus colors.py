@@ -1,17 +1,50 @@
 import tkinter as tk
 import tkinter.font
 from datetime import datetime
-import os, time, json, openai, threading, sys
+import os, time, json, openai, threading, sys, requests
+import embedder  # for getting cosine similarity between 2 strings or lists of strings (or list of strings and strings)
 
+import logging
+logging.basicConfig(filename='log_DEBUGlevel.log', encoding='utf-8', level=logging.DEBUG)
+logging.info('start logging, level=debug')
 
-# app has:
-##    - CUSTOM HIGHLIGHTING OF TEXT
-##         + select text and hit ctrl or alt + a number to change the background color or text color
-##         + bottom line configures colors
+use_mock = False
+class Mock:
+    def encode(self):
+        return [0]
+    def decode(self):
+        return '0'
+if use_mock:
+    tokenizer = Mock()
+    logging.info('using mock tokenizer')
+else:
+    t0 = time.time()
+    from transformers import GPT2Tokenizer
+    tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
+    logging.info(f'using real tokenizer, importing took {time.time()-t0} seconds')
 
-##    - F1 to toggle window staying on top
-##    - improved word boundaries (relative to base tkinter)
-##    - tabsize set to 2 spaces
+'''
+tokenize and untokenize functions require this at the top:
+    from transformers import GPT2Tokenizer
+    tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
+'''
+# string --> list of token ids
+def tokenize(string):
+    t0 = time.time()
+
+    tokens = tokenizer.encode(string, max_length=8000, truncation=True)
+
+    logging.info(f'tokenizing took {time.time()-t0} seconds')
+    logging.info(f'last string was {len(string)} tokens')
+    return tokens
+# list of token ids --> string
+def untokenize(tokens):
+    t0 = time.time()
+
+    string = tokenizer.decode(tokens)
+
+    logging.info(f'tokenizing took {time.time()-t0} seconds')
+    return string
 
 def text_append(path, appendage):
     with open(path, 'a', encoding='utf-8') as f:
@@ -37,16 +70,18 @@ def open_json(filename):
         f.close()
     return contents
 
-history_path = 'call_history.json'
-store_history = True
-if history_path in os.listdir() and store_history:
-    call_history = open_json(history_path)
-
 def call_openai(settings):
+    # little shortcircuit for testing things.
+    testing = use_mock
+    if testing:
+        prompt = settings['prompt']
+        n = settings['n']
+        return [f'{i} response {i}' for i in range(int(n))]
+
     completions = openai.Completion.create(**settings)
     responses = [choice['text'] for choice in completions.choices]
     if store_history:
-        call_history.append({'prompt':settings['prompt'], 'settings':settings, 'responses':responses})
+        call_history.append({'prompt':tokenize(settings['prompt']), 'settings':settings, 'responses':list(map(tokenize,responses))})
         make_json(call_history, history_path)
     return responses
 
@@ -91,32 +126,42 @@ def simple_completion(prompt):
         make_json(call_history, history_path)
     return responses[0]
 
-symbols = {
-    'gear':chr(15),
-    'music':chr(14),
-    'heart':chr(30),
-    'wave':chr(126),
-    'wall':chr(124),
-    'floor':chr(95),
-    'arrow right':chr(26),
-    'arrow left':'<-',
-    'arrow up':chr(24),
-    'arrow down':chr(25),
-    'block':chr(22),
-    'thick arrow right':chr(16),
-    'thick arrow left':chr(17),
-    'smile empty':chr(1),
-    'smile full':chr(2),
-    'at':chr(64)
-}
+
+def color_full(string, directions):
+    pass
 
 def generate(prompt):
     full_text = t.get(1.0, 'end')[:-1]
+    
+    flag = 'emb'
+    if f'[{flag}]' in full_text and f'[/{flag}]' in full_text:
+        embs = [string[1:-1] for string in between2(full_text, f'[{flag}]', f'[/{flag}')]
+    else:
+        embs = None
+    
+    full_text = t.get(1.0, 'end')[:-1]
     api_settings = open_json('api_settings.json')
-    # print({'prompt':prompt})
-    # creates a function that if called, will call the openai api and print the outputs.
-    def call_and_show():
 
+    # creates a function that if called, will call the openai api and print the outputs in a nice way.
+    def call_and_show():
+        symbols = {
+            'gear':chr(15),
+            'music':chr(14),
+            'heart':chr(30),
+            'wave':chr(126),
+            'wall':chr(124),
+            'floor':chr(95),
+            'arrow right':chr(26),
+            'arrow left':'<-',
+            'arrow up':chr(24),
+            'arrow down':chr(25),
+            'block':chr(22),
+            'thick arrow right':chr(16),
+            'thick arrow left':chr(17),
+            'smile empty':chr(1),
+            'smile full':chr(2),
+            'at':chr(64)
+        }
         right = symbols['block'] + symbols['thick arrow right']
         joiner = '+'        
         components = []
@@ -124,7 +169,7 @@ def generate(prompt):
 
         components.append(col('cy','[ Prompt ]'))
         print(combine())
-        print(prompt)
+        print(prompt[-1500:])
 
         api_settings['prompt'] = prompt
 
@@ -146,7 +191,28 @@ def generate(prompt):
                     print(attachment + simple_completion(prompt + r + attachment))
                     components = components[:-1]
             components = components[:-1]
+
+        def show_embeddings(scores, arggrid):
+            for i in range(len(scores)):
+                for j in range(len(scores[i])):
+                    emb1, emb2 = arggrid[i][j]
+                    score = scores[i][j]
                     
+                    print(col('gr', 'emb1:'))
+                    print(emb1)
+                    print(col('gr', 'emb2:'))
+                    print(emb2)
+                    print(col('ma', 'score:'))
+                    print(score)
+                    print(col('cy','='*10))
+
+        if embs != None:
+            print(col('cy', '============ embeddings coming ============='))
+            scores, arggrid = compare_emb(embs, responses)
+            show_embeddings(scores, arggrid)
+            print(col('ma', '============ grid coming ============='))
+            [print(row) for row in scores]
+    
     newThread(call_and_show)  # runs the function on a seperate thread from tkinter, to prevent freezing.
 
 def make_json(dic, filename):
@@ -194,41 +260,7 @@ def set_word_boundaries(root):
 
 
 
-# when you press enter, checks the start of the line for key, and inserts value on the next line
-my_name = 'Atilla'
-other_name = 'Joe'
-dialogue = {
-    f'{my_name}: ':f'{other_name}:',
-    f'{other_name}: ':f'{my_name}:'
-    }
-
-use_openai = 'api_key.txt' in os.listdir()
-if use_openai:
-    api_settings = {
-        'engine':'code-davinci-002',
-        'prompt':'Once upon a time',
-        'temperature':0.8,
-        'max_tokens':100,
-        'n':1,
-        'stop':None
-        }
-    api_settings = open_json('api_settings.json')
-    
-    api_key = text_read('api_key.txt')
-    openai.api_key = api_key
-
-root = tk.Tk()
-root.config(background='black')
-#root.attributes('-topmost', True)
-
-root.geometry('1000x600-0+0')
-default_app_title = 'text editor'
-
-root.title(default_app_title)
-set_word_boundaries(root)
-
 # (for development,) for accessing tkinter variables while the app is still running
-fancy = False
 def printeval():
     text = evalthis.get()
     evaluation = str(eval(text))
@@ -245,41 +277,6 @@ def toggle_fancy():
     else:
         fancy = True
 
-evalthis = tk.Entry(root, width=50)
-evalthis.pack()
-evalthis.bind('<Return>', lambda *a:printeval())
-
-c1 = 'grey'
-c2 = 'black'
-sbg = 'cyan'
-textSettings = {
-    'fg':c1, 'bg':c2, 'insertbackground':'white',
-    'selectbackground':c1, 'selectforeground':sbg, 'width':150,
-    'height':50, 'font':('Comic Sans','13')
-    }
-frameSettings = {
-    'fg':c1, 'bg':c2, 'width':150,
-    'height':50
-    }
-
-'''
-t = tk.Text(root, fg=c1, bg=c2, insertbackground='white',
-            selectforeground=c1, selectbackground=sbg,
-            width=150, height=50,
-            font=('Comic Sans', '13'))'''
-t = tk.Text(root, **textSettings)
-
-w = t
-font = tkinter.font.Font(font=w['font'])
-tab = font.measure(' '*4)
-w.config(tabs=tab)
-
-# for outputs
-class Window:
-    def __init__(self):
-        output_frame = tk.Frame(root, **frameSettings)
-
-
 # toggling the window being 'on top' or not
 def toggle_topmost():
     window = root
@@ -289,24 +286,6 @@ def toggle_topmost():
         window.attributes('-topmost', False)
     else:
         window.attributes('-topmost', True)
-
-# logs contents of editor. and re-creates color dictionary
-def func():
-    
-    contents = t.get(1.0, 'end')[:-1]
-
-    timestamp = date_time()
-    edge = '---------------------'
-    to_log = '\n' + '\n'.join([edge,timestamp,contents,edge])
-    
-    directory = r'C:\Users\Gebruiker\Desktop\mental tools'
-    filename = 'ram_aid_log.txt'
-    
-    log_thing(to_log, directory, filename)
-
-    status_message(f'Saved in ram_aid.txt')
-
-t.pack()
 
 def get_color(index, key):
     text = t
@@ -330,48 +309,140 @@ str(line) -> dict(highlight_hotkeys)
                      'control':{k:{'foreground':v} for k,v in color_numbers.items()}}
     return highlight_hotkeys
 
-default_color_line = '1-green, 2-red, 3-cyan, 4-black, 5-grey, 6-orange, 7-brown, 8-purple, 0-violet'
-
-t.insert('end', '\n'.join(['', '', '',
-                           'normal color (5-grey)', 'generic highlight (3-cyan)', 'positive (6-orange)', 'negative (8-purple)',
-                           default_color_line]))
+# find the previous line
+def get_previous():
+    i = int(t.index('insert').partition('.')[0])-1
+    prev_line = t.get(f'{i}.0 linestart', f'{i}.0 lineend')
+    return prev_line
 
 def on_release(event):
-    if event.keysym == 'Return':
-        i = int(t.index('insert').partition('.')[0])-1
-        cur_line = t.get(f'{i}.0 linestart', f'{i}.0 lineend')
+    hotkeys.event_to_action(event_type='on release', event=event)
 
-        for person in dialogue:
-            if cur_line.startswith(person):
-                t.insert('insert', dialogue[person])
+def move_insertion(text_widget, right, down):
+    w = text_widget
+    pos = w.index('insert')
+    line, column = map(int,pos.split('.'))
+    t.mark_set("insert", "%d.%d" % (line + down, column + right))
+
+# replaces the current line with something else
+def replace_current(widget, replacer_function):
+    # get current line
+    # delete current line
+    # add something else
+    w = widget
+    f = replacer_function
+
+    current = w.get('insert linestart', 'insert lineend')  # btw current instead of insert would get the cursor line
+    w.delete('insert linestart', 'insert lineend')
+    w.insert('insert linestart', f(current))
+
+'''
+When the hotkey is pressed, replaces the current line where the insertion position is, with something else.
+
+Example:
+[replacement]
+>>>user('___')
+>>>ai('
+[/replacement]
+
+Effect of the above text being in the text editor:
+    - `hey i wanna play a game` in the current line
+    - press the hotkey  (ctrl+r as of writing this)
+    -->
+    line is replaced with:
+`
+>>>user('hey i wanna play a game')
+>>>ai('
+`
+
+so, ___ is the placeholder marker there.
+'''
+def replacement(event):
+
+    full = t.get('1.0', 'end')
+    lang = 'replacement'
+    if not f'[{lang}]' in full or not f'[/{lang}]' in full:
+        e = f'you used hotkey_replace without any [{lang}] code'
+        raise Exception(e)
+
+    replacement_code = full.partition(f'[{lang}]')[2].partition(f'[/{lang}]')[0][1:-1]
+    current_marker = '___'
+    if current_marker not in replacement_code:
+        e = f'the marker is {current_marker}'
+        raise Exception(e)
+
+    before, placeholder, after = replacement_code.partition(current_marker)
+    string_transformer = lambda placeholder:before + placeholder + after
+    
+    # replace current line, using a `string-->string` function, to get the new line
+    replace_current(w, string_transformer)  # lambda current:f">>>user('{current}')\n>>>ai('"
+    if safe_mode == False:
+        prompt = get_prompt(event)
+        generate(prompt)
+
+def hotkey_test(event):
+    pass
+
+# calls moderations endpoint on "prompt" and shows results neatly
+def check_moderations(prompt):
+    def call_and_show():
+        # Set the text you want to check in the 'input' field
+        data = {'input': prompt}
+
+        # Set the Content-Type and Authorization headers
+        headers = {
+          'Content-Type': 'application/json',
+          'Authorization': f'Bearer {api_key}'
+        }
+
+        # Make the request to the moderation endpoint
+        response = requests.post('https://api.openai.com/v1/moderations', headers=headers, json=data).json()
+
+        # Print the response
+        categories = response['results'][0]['categories']
+        scores = response['results'][0]['category_scores']
+        flagged = response['results'][0]['flagged']        
+
+        if flagged:
+            print('flagged:', col('re',flagged))
+        else:
+            print('flagged:', col('gr',flagged))
+        for k,v in categories.items():
+            v = col('re', v) if v == True else col('gr', v)
+            score = float(scores[k])
+            print(f'{k}:{v}', round(score, 3))
+            
+        for k,v in scores.items():
+            if scores.keys() == categories.keys():
                 break
+            print(f'{k}:{v}')
+    newThread(call_and_show())
 
+'''
+retrieves one of 2 pieces of text:
+    - selected text if there is any, if not:
+    - text from the beginning of the text widget, until the "insert" point (where you type)
+'''
+def get_prompt(event):
+    try:
+        event.widget.selection_get()
+    except:
+        prompt = event.widget.get(1.0, 'insert')
+    else:
+        prompt = event.widget.selection_get()
+    return prompt
+
+# uses Hotkeys class instance to deal with all commands.
+#   except for the color highlighting, that part is in need of a refactor, but is just shoved into a corner for now.
 highlight_counter = 1
 def on_press(event):
-    if use_openai:
-        # this first part will call the openai api if you press ctrl+g
-        # if you select text, itll use that as the prompt. if not, itll use the text up to where the cursor is
-        if event.state == 12 and event.keysym == 'g':
-            try:
-                event.widget.selection_get()
-            except:
-                prompt = event.widget.get(1.0, 'insert')
-            else:
-                prompt = event.widget.selection_get()
+    hotkeys.event_to_action(event_type='on press', event=event)
+    handle_colors(event)
 
-            generate(prompt)
-    '''
-Escape -> write to ram_aid_log.txt
-control/alt + number -> change highlighted text:
-    control for text color
-    alt for background color
-
-( potential improvements: other hotkey system than elifelifelifelif, remove need for global highlight_counter (maybe using
-    a class), remove code duplication in alt/control branching, remove need for colors['selectbackground']=sgb )
-'''
+# code to highlight text, is messy and ugly.
+def handle_colors(event):
     global highlight_counter
     widget = event.widget
-
     # code duplication. key 'alt' in one case, key 'control' in another
         # only difference in following bifurcation is:
             # to get 'colors' from highlight_hotkeys you use the key 'alt' in one case, and 'control' in another
@@ -408,20 +479,7 @@ control/alt + number -> change highlighted text:
             existing_settings = {key:get_color(first,key) # get existing settings
                                  for key in ('foreground','background','selectforeground','selectbackground')}
             highlight_counter += 1 # count up the thingy
-    elif event.keysym == 'Escape':
-        func()
-    elif event.keysym == 'F1':
-        toggle_topmost()
 
-'''
-if 'backups' not in os.listdir(os.getcwd()):
-    os.mkdir('backups')
-def backup(name, entry, j):
-    if name in j:
-        t = time.time()
-        j[name] = entry
-        make_json(j, f'{name}-{t}.json')
-'''
 
 # returns an ansi escape sequence to color a string.  (ft is "first two", s is "string")
 def col(ft, s):
@@ -451,7 +509,7 @@ def cstore(name):
             ranges[number]['tagon'] = tup[2]
         elif tup[0] == 'tagoff':
             ranges[number]['tagoff'] = tup[2]
-            
+
     ranges = dict(sorted(ranges.items(), key=lambda tup:int(tup[0])))
     j = {'text':t.get(1.0, 'end')[:-1],
          'ranges':ranges}
@@ -515,57 +573,11 @@ def cload(name, replace=True):
 
     status_message(message)
 
-def tempload(name, replace=True):
-    global highlight_counter
-
-    collection = open_json('temp.json')
-    if name not in collection:
-        message = 'wrong key'
-    else:
-        j = collection[name]
-        ranges = j['ranges']
-        text = j['text']
-        #print(f'ranges:{ranges}')
-        
-        if replace:
-            t.delete(1.0, 'end')
-        t.insert(1.0, text)
-        highest = highlight_counter+1000
-        for n, (number, d) in enumerate(ranges.items()):
-            first, last = d['tagon'], d['tagoff']
-            #print(f'first:{first}, last:{last}')
-            settings = d['settings']
-            #print(f'settings:{settings}')
-            t.tag_add(n, first, last)
-            t.tag_config(n, **settings)
-            highest = max(int(number), highest)
-            #print()
-        highlight_counter = highest
-        
-        default_app_title = name
-        message = 'succesful'
-
-    status_message(message)
-
-
-if 'ram_aid.json' in os.listdir(os.getcwd()):
-    collection = open_json('ram_aid.json')
-    if 'default' in collection:
-        t.delete(1.0, 'end')
-        cload('default')
-
 def cshow(arg=''):
     if 'ram_aid.json' in os.listdir(os.getcwd()):
         return ', '.join(open_json('ram_aid.json').keys())
     else:
         return None
-
-def tempshow(arg=''):
-    if 'temp.json' in os.listdir(os.getcwd()):
-        return ', '.join(open_json('temp.json').keys())
-    else:
-        return None
-
 
 def cfont(n):
     t.config(font=('Comic Sans', n))
@@ -573,7 +585,7 @@ def cfont(n):
 def cempty(arg=''):
     t.delete(1.0, 'end')
 
-# the purpose is to use timer.go() and timer.stop() from the UI, by using the tk.Entry widget (called evalthis)
+# the purpose is to use timer.go() and timer.stop() from the UI, by using a tk.Entry widget (called evalthis)
 class Timer:
     def __init__(self):
         self.starttime = None
@@ -607,15 +619,309 @@ class Timer:
     def reset(self):
         self.go()
 
+def find_script(full_text, lang):
+    return [string[1:-1] for string in between2(full_text, start=f'[{lang}]', end=f'[/{lang}]')]
 
+# for using hotkeys to interact with functions from within a tkinter tk.Text widget.
+class Hotkeys:
+    def __init__(self):
+        self.bindings = {}
+        self.instructions = []
+
+        self.allowed_actions = [
+            'moderate',
+            'generate',
+            'count words',
+            'toggle topmost',
+            'replacement',
+            'autoedit'
+        ]
+        self.debug = False
+
+    
+    # event_type:str, event:tkinter event
+    #   if the to_call stuff is too annoying and ugly, just ignore it, and call whatever function immediately
+    def event_to_action(self, event_type, event):
+        ctrl_held = event.state == 12
+        alt_held = event.state == 131080
+        other = event.keysym
+
+        report = []
+
+        # turning the pressed hotkey into something managable
+        if ctrl_held:
+            b = f'ctrl+{other}'
+        elif alt_held:
+            b = f'alt+{other}'
+        else:
+            b = other
+        
+        # for debug
+        report.append(json.dumps({
+            'reality':{
+                'pressed hotkey':b,
+                'event type':event_type,
+                'ctrl_held':ctrl_held,
+                'alt_held':alt_held,
+                'other':other
+            }
+        }, indent=2))
+        
+        # i feel like this if elif elif elif structure has to exist at some point.
+        #   at some point, the abstractions hit bedrock. no need to put that off endlessly.
+        for ins in self.instructions:
+            report.append('start instruction')
+            report.append(json.dumps({'instruction':ins}, indent=2))  # for debug
+
+            c1 = ins['event type'] == event_type
+            c2 = ins['binding'] == b
+            c3 = ins['action'] in self.allowed_actions
+            report.append( '\t' + ', '.join([col('gr','True') if c == True else col('re','False') for c in (c1,c2,c3)]) )  # for debug
+
+            if c1 and c2 and c3:
+                report.append(f'\tdoing action, a={ins["action"]}')  # for debug
+
+                a = ins['action']
+                if a == 'moderate':
+                    prompt = get_prompt(event)
+                    to_call = lambda:check_moderations(prompt)
+                elif a == 'generate':
+                    prompt = get_prompt(event)
+                    to_call = lambda:generate(prompt)
+                elif a == 'count words':
+                    prompt = get_prompt(event)
+                    to_call = lambda:root.title('wordcount: ' + str(len(prompt.split(' '))))
+                elif a == 'toggle topmost':
+                    to_call = lambda:toggle_topmost()
+                elif a == 'replacement':
+                    to_call = lambda:replacement(event)
+                elif a == 'autoedit':
+                    lang = 'autoedit'
+                    all_chunks = find_script(t.get(1.0, 'end'), lang)
+                    f1 = lambda:report.append(f'{lang} all_chunks:{all_chunks}')
+                    
+                    if all_chunks == []:
+                        to_call = f1
+                    else:
+                        code = all_chunks[0]
+                        for line in code.split('\n'):
+                            left, right = line.split(' = ')
+                            if left == 'next':
+                                nxt = right
+                            elif left == 'prev contains':
+                                prev = right
+                            else:
+                                raise Exception('autoedit code is wrong')
+                        if prev in get_previous():
+                            # adds nxt at the current typing position
+                            f2 = lambda:t.insert('insert', nxt)
+                            to_call = (f1, f2)
+                        else:
+                            to_call = f1
+                else:
+                    e = f'action {a} does not exist, ins = {ins}' + str(a == 'moderate')
+                    raise Exception(e)
+                    to_call = lambda:report.append('raised exception')
+                
+                report.append(f'calling function for {a}')
+                if type(to_call) in (list, tuple):
+                    for f in to_call:
+                        f()
+                else:
+                    to_call()
+                report.append('done calling function')
+            else:
+                report.append(f'\tnot doing action, a={ins["action"]}')
+            report.append('end instruction')
+
+        if self.debug:
+            print('=== REPORT START ===')
+            for line in '\n'.join(report).split('\n'):
+                print(f'\t{line}')
+            print('=== REPORT end ===')
+
+    def add_hotkey(self, d):
+        # some validation
+        if type(d) is not dict:
+            e = f'd is not dict, d={d}'
+            raise Exception(e)
+        for key in [
+            'event type',
+            'description',
+            'binding',
+            'action'
+        ]:
+            if key not in d:
+                e = f'key {key} not in d'
+                raise Exception(e)
+        if d['action'] not in self.allowed_actions:
+            e = f'action not allowed, action={d["action"]}, d={d}'
+            raise Exception(e)
+        
+        # doing this in 2 ways.
+        # complicated way:
+        # add binding if its ctrl+ or alt+ something, or an F key. else, dont add.
+        b = d['binding']
+        if 'ctrl+' in b or 'alt+' in b:
+            if b in self.bindings:
+                print(f'overriding {self.bindings[b]} with {d}')
+            self.bindings[b] = d
+        elif b[0] == 'F' and b[1:] in [str(i) for i in range(0, 13)]:
+            if b in self.bindings:
+                print(f'overriding {self.bindings[b]} with {d}')
+            self.bindings[b] = d
+        else:
+            print('did not add d=', d)
+    
+        # simple way:
+        self.instructions.append(d)
+
+        # for debugging
+        stringify = lambda d:json.dumps(d, indent=2, default=lambda o:str(o))
+        print(f'new bindings: {stringify(self.bindings)}')
+        print(f'new instructions: {stringify(self.instructions)}')
+
+compare_emb = embedder.compare_emb
+history_path = 'call_history.json'
+store_history = True
+if history_path in os.listdir() and store_history:
+    call_history = open_json(history_path)
+
+
+# setting default generation settings, and getting the api key
+use_openai = 'api_key.txt' in os.listdir()
+if use_openai:
+    api_settings = {
+        'engine':'code-davinci-002',
+        'prompt':'Once upon a time',
+        'temperature':0.8,
+        'max_tokens':100,
+        'n':1,
+        'stop':None
+        }
+    api_settings = open_json('api_settings.json')
+    
+    api_key = text_read('api_key.txt')
+    openai.api_key = api_key
+
+# setting some basic stuff
+root = tk.Tk()
+root.config(background='black')
+root.geometry('1000x600-0+0')
+default_app_title = 'text editor'
+root.title(default_app_title)
+set_word_boundaries(root)
+
+# tk.Entry for running eval()
+evalthis = tk.Entry(root, width=50)
+evalthis.pack()
+evalthis.bind('<Return>', lambda *a:printeval())
+
+# colors and stuff
+c1 = 'grey'
+c2 = 'black'
+sbg = 'cyan'
+textSettings = {
+    'fg':c1,
+    'bg':c2,
+    'insertbackground':'white',
+    'selectbackground':c1,
+    'selectforeground':sbg,
+    'width':150,
+    'height':50,
+    'font':('Comic Sans','14')
+}
+frameSettings = {
+    'fg':c1,
+    'bg':c2,
+    'width':150,
+    'height':50
+}
+
+t = tk.Text(root, **textSettings)
+t.pack()
+
+# defining how many spaces a tab inserts
+w = t
+font = tkinter.font.Font(font=w['font'])
+tab = font.measure(' '*4)
+w.config(tabs=tab)
+default_color_line = '1-green, 2-red, 3-cyan, 4-black, 5-grey, 6-orange, 7-brown, 8-purple, 0-violet'
+
+# inserting default text
+default_present = False
+if 'ram_aid.json' in os.listdir(os.getcwd()):
+    collection = open_json('ram_aid.json')
+    if 'default' in collection:
+        t.delete(1.0, 'end')
+        cload('default')
+        default_present = True
+if default_present == False:
+    t.insert('end', '\n'.join([
+        '',
+        '',
+        '',
+        'normal color (5-grey)',
+        'generic highlight (3-cyan)',
+        'positive (6-orange)',
+        'negative (8-purple)',
+        default_color_line
+    ]))
+
+# misc
+fancy = False
+safe_mode = True
 timer = Timer()
 
+# for commands
 t.bind('<KeyPress>', on_press)
 t.bind('<KeyRelease>', on_release)
+hotkeys = Hotkeys()  # where hotkey logic and behavior is managed.
+
+# defining behavior for each hotkey
+hotkey_settings = [
+    {
+        'binding':'ctrl+g',
+        'action':'generate',
+        'event type':'on press',
+        'description':'generate text with openai api, and show outputs'
+    },
+    {
+        'binding':'ctrl+m',
+        'action':'moderate',
+        'event type':'on press',
+        'description':'check "safety" of text with openai api, and show results'
+    },
+    {
+        'binding':'F1',
+        'action':'toggle topmost',
+        'event type':'on press',
+        'description':'toggles topmost'
+    },
+    {
+        'binding':'ctrl+q',
+        'action':'count words',
+        'event type':'on press',
+        'description':'show the word count in the title..'
+    },
+    {
+        'binding':'ctrl+r',
+        'action':'replacement',
+        'event type':'on press',
+        'description':'using [replacement], replace the previous line with something else'
+    },
+    {
+        'binding':'Return',
+        'action':'autoedit',
+        'event type':'on release',
+        'description':'blank'
+    }
+]
+for instruction in hotkey_settings:
+    hotkeys.add_hotkey(instruction)
+
 
 root.mainloop()
-
-
 
 
 
