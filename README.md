@@ -1,4 +1,6 @@
 # text-editor-OpenAI
+(not guaranteed to work lol, havent used or checked this in a while)
+
 video showcase: https://www.youtube.com/watch?v=eTO0O3Eg-TQ&ab_channel=AtillaCodesStuff
 
 to use: download, put your OpenAI key in the api_key.txt file, and run.
